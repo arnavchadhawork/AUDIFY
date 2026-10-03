@@ -1,14 +1,14 @@
-# 🎵 Discord Music Bot (YouTube + SoundCloud + Spotify)
+# 🎵 Discord YouTube Music Bot
 
-Ye ek Discord music bot hai jo **YouTube** (videos, playlists, search) aur **Spotify** links support karta hai. YouTube search fail hone par bot **SoundCloud** par fallback search karta hai. Spotify links se track metadata lekar YouTube/SoundCloud par audio search kiya jata hai.
+Ye Discord music bot sirf **yt-dlp** se YouTube par gaana naam se search karta hai aur video URLs play karta hai. YouTube playlist sirf playlist URL se add hoti hai. Playback YouTube/yt-dlp ki availability par depend karta hai; Render jaise hosts par YouTube bot checks ki wajah se kuch requests fail ho sakti hain. FFmpeg system par nahi milne par `imageio-ffmpeg` ka bundled executable use hota hai.
 
 ---
 
 ## 🌟 Features
-- 🟢 **Spotify Link Support**: Spotify tracks, playlists, aur albums ke metadata se audio search hota hai.
-- 🔴 **YouTube Support**: Song name search karein, video link dalein, ya puri YouTube playlist queue karein.
-- 🟠 **SoundCloud Fallback**: YouTube search fail hone par bot SoundCloud par search karke playable track queue karta hai.
+- 🔴 **YouTube Support**: Song name search karein, video URL play karein, ya playlist URL se playlist queue karein.
 - ⚡ **Dual Commands**: Standard prefix commands (`!play`) aur modern slash commands (`/play`) dono support karta hai.
+- 📋 **Sequential Queue**: Playing song ke dauran add kiye gaye songs queue mein rehte hain aur baari-baari play hote hain. Playlist sirf playlist URL se add hoti hai; plain text ek song search karta hai.
+- 🔁 **Voice Recovery**: Voice connection temporarily drops hone par current track queue mein preserve hota hai aur connection wapas aane par dobara play hota hai.
 - 🔌 **Instant Auto Disconnect**: Jaise hi Voice Channel khali hoga (saare users leave karenge), bot turant music stop karega aur VC se disconnect ho jayega.
 
 
@@ -61,6 +61,10 @@ Jab terminal par:
 `🤖 YOUR BOT IS ONLINE & READY!`
 likha aa jaye, iska matlab aapka bot ready hai!
 
+### Render Deployment
+
+Render par **Python** runtime use karein (Docker nahi). Build command `python -m pip install --upgrade -r requirements.txt yt-dlp` aur start command `python bot.py` set karein. Render dashboard mein `DISCORD_TOKEN` environment variable add karein; secret ko repository mein commit na karein. Har deploy par **Clear build cache & deploy** chunein. Bot startup par FFmpeg binary verify karta hai aur FFmpeg missing/broken hone par playback ke waqt chup-chaap fail hone ke bajaye clear startup error deta hai.
+
 ---
 
 ## 📜 Commands List
@@ -69,7 +73,7 @@ Aap Prefix (`!`) ya Slash (`/`) dono use kar sakte hain:
 
 | Command | Shortcut / Slash | Description |
 |---|---|---|
-| `!play <song name ya link>` | `/play <query>` | YouTube song/link, YouTube search fail hone par SoundCloud fallback, ya Spotify track/playlist play karein |
+| `!play <song name ya link>` | `/play <query>` | Song name ya video URL play/queue karein. Playlist ke liye playlist URL dein. |
 | `!pause` | `/pause` | Gaana pause karein |
 | `!resume` | `/resume` | Paused gaana resume karein |
 | `!skip` | `/skip` | Agle gaane par skip karein |
@@ -86,7 +90,6 @@ Aap Prefix (`!`) ya Slash (`/`) dono use kar sakte hain:
 ---
 
 ## 💡 Examples
-- Spotify Track: `!play https://open.spotify.com/track/4cOdK2wGLETKBW3PvgPWqT`
-- Spotify Playlist: `!play https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M`
 - YouTube Direct: `!play https://www.youtube.com/watch?v=kJQP7kiw5Fk`
+- YouTube Playlist: `!play https://www.youtube.com/playlist?list=PLAYLIST_ID`
 - Song Name Search: `!play arijit singh kesariya`

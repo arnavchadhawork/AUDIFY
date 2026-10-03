@@ -1,14 +1,14 @@
 import asyncio
 import functools
 import logging
+import re
 from typing import Optional, List, Dict, Any, Deque, Tuple
 from collections import deque
 
 import discord
 import yt_dlp
 
-from config import FFMPEG_PATH
-import spotify_helper
+from config import COMMAND_PREFIX, FFMPEG_PATH
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +23,7 @@ YTDL_BASE_OPTS = {
     "logtostderr": False,
     "quiet": True,
     "no_warnings": True,
+    "no_color": True,
     "default_search": "ytsearch",
     "source_address": "0.0.0.0",  # bind to ipv4 since ipv6 can cause issues
 }
@@ -34,6 +35,28 @@ FFMPEG_OPTIONS = {
 }
 
 
+def normalize_query(query: str) -> str:
+    """Accept plain URLs and URLs copied from Markdown-formatted chat logs."""
+    query = query.strip()
+    for command in (f"{COMMAND_PREFIX}play ", "/play "):
+        if query.lower().startswith(command.lower()):
+            query = query[len(command):].strip()
+            break
+    markdown_url = re.fullmatch(r"\[([^\]]+)\]\((https?://[^)]+)\)", query)
+    if markdown_url:
+        return markdown_url.group(2)
+    if query.startswith("<") and query.endswith(">"):
+        return query[1:-1].strip()
+    return query
+
+
+def _friendly_ytdlp_error(error: Exception) -> str:
+    message = re.sub(r"\x1b\[[0-9;]*m", "", str(error))
+    if "sign in to confirm" in message.lower() or "not a bot" in message.lower():
+        return "YouTube is blocking requests from this server. Try again later; FFmpeg settings will not fix this."
+    return message
+
+
 def _first_entry(info: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     if not info:
         return None
@@ -42,47 +65,15 @@ def _first_entry(info: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     return next((entry for entry in info["entries"] if entry), None)
 
 
-async def _extract_with_fallback(
-    query: str,
-    fallback_search: Optional[str] = None,
-) -> Tuple[Optional[Dict[str, Any]], str]:
-    """Try the requested yt-dlp query, then search SoundCloud if provided."""
+async def _extract_youtube(query: str) -> Optional[Dict[str, Any]]:
+    """Extract one YouTube result or URL using yt-dlp."""
     loop = asyncio.get_running_loop()
 
     def extract(search_query: str) -> Optional[Dict[str, Any]]:
         ydl = yt_dlp.YoutubeDL(dict(YTDL_BASE_OPTS))
         return _first_entry(ydl.extract_info(search_query, download=False))
 
-    try:
-        info = await loop.run_in_executor(None, functools.partial(extract, query))
-        if info:
-            return info, "YouTube"
-        youtube_error = "No results found."
-    except Exception as exc:
-        youtube_error = str(exc)
-
-    if not fallback_search:
-        logger.warning("YouTube lookup failed; no SoundCloud fallback is available.")
-        return None, "YouTube"
-
-    try:
-        info = await loop.run_in_executor(
-            None,
-            functools.partial(extract, f"scsearch1:{fallback_search}"),
-        )
-        if info:
-            logger.info("YouTube lookup failed; using SoundCloud fallback.")
-            return info, "SoundCloud"
-        soundcloud_error = "No results found."
-    except Exception as exc:
-        soundcloud_error = str(exc)
-
-    logger.error(
-        "Audio lookup failed on YouTube and SoundCloud. YouTube: %s; SoundCloud: %s",
-        youtube_error,
-        soundcloud_error,
-    )
-    return None, "SoundCloud"
+    return await loop.run_in_executor(None, functools.partial(extract, query))
 
 
 def format_duration(seconds: Optional[int]) -> str:
@@ -143,6 +134,8 @@ class GuildPlayer:
 
         # Concurrency / synchronization
         self.play_next_song = asyncio.Event()
+        self.voice_connected = asyncio.Event()
+        self.skip_requested = False
         self.audio_player_task: Optional[asyncio.Task] = None
         self.idle_task: Optional[asyncio.Task] = None
 
@@ -177,24 +170,42 @@ class GuildPlayer:
 
             # Cancel idle timer if active
             self.cancel_idle_timer()
+            self.current = song_to_play
+            self.skip_requested = False
 
             # Ensure song has a stream URL
             if not song_to_play.is_resolved:
                 resolved = await self.resolve_song_audio(song_to_play)
+                if self.current is not song_to_play:
+                    continue
+                if self.skip_requested:
+                    self.skip_requested = False
+                    self.current = None
+                    continue
                 if not resolved:
+                    self.current = None
                     if self.text_channel:
                         await self.text_channel.send(
                             f"❌ Could not resolve audio for **{song_to_play.title}**. Skipping..."
                         )
                     continue
 
-            self.current = song_to_play
-            self.history.append(song_to_play)
-
             # Ensure voice client is connected
             if not self.voice_client or not self.voice_client.is_connected():
-                logger.warning("Voice client is not connected. Halting playback.")
-                break
+                logger.warning("Voice client is disconnected; preserving the track until reconnection.")
+                self.queue.appendleft(song_to_play)
+                self.current = None
+                self.voice_connected.clear()
+                while not self.voice_connected.is_set():
+                    try:
+                        await asyncio.wait_for(self.voice_connected.wait(), timeout=5)
+                    except asyncio.TimeoutError:
+                        voice_client = self.voice_client
+                        if voice_client and voice_client.is_connected():
+                            self.voice_connected.set()
+                continue
+
+            self.history.append(song_to_play)
 
             try:
                 # Create FFmpeg audio source
@@ -220,7 +231,14 @@ class GuildPlayer:
             except Exception as e:
                 logger.error(f"Failed to play audio: {e}")
                 if self.text_channel:
-                    await self.text_channel.send(f"❌ Error playing **{song_to_play.title}**: {e}")
+                    if "ffmpeg was not found" in str(e).lower():
+                        error_message = (
+                            "❌ FFmpeg is unavailable on this host. Install `imageio-ffmpeg` "
+                            "or provide a valid `FFMPEG_PATH`, then redeploy."
+                        )
+                    else:
+                        error_message = f"❌ Error playing **{song_to_play.title}**: {e}"
+                    await self.text_channel.send(error_message)
                 self.play_next_song.set()
 
             # Wait until current track finishes playing or is skipped
@@ -228,9 +246,9 @@ class GuildPlayer:
 
     async def resolve_song_audio(self, song: Song) -> bool:
         """Extracts direct audio stream URL using yt-dlp."""
-        query = song.query if song.query else song.title
+        query = normalize_query(song.query if song.query else song.title)
         try:
-            info, source = await _extract_with_fallback(query, song.title)
+            info = await _extract_youtube(query)
 
             if not info or "url" not in info:
                 return False
@@ -240,7 +258,7 @@ class GuildPlayer:
             song.webpage_url = info.get("webpage_url", song.webpage_url)
             song.duration = info.get("duration", song.duration)
             song.thumbnail = info.get("thumbnail", song.thumbnail)
-            song.source = source
+            song.source = "YouTube"
             song.is_resolved = True
             return True
         except Exception as e:
@@ -249,8 +267,7 @@ class GuildPlayer:
 
     def create_now_playing_embed(self, song: Song) -> discord.Embed:
         """Creates a modern Discord embed for the currently playing song."""
-        colors = {"Spotify": 0x1DB954, "SoundCloud": 0xFF5500}
-        color = colors.get(song.source, 0xFF0000)
+        color = 0xFF0000
         embed = discord.Embed(
             title="🎶 Now Playing",
             description=f"**[{song.title}]({song.webpage_url if song.webpage_url else 'https://youtube.com'})**",
@@ -271,15 +288,38 @@ class GuildPlayer:
 
         if song.thumbnail:
             embed.set_thumbnail(url=song.thumbnail)
-        embed.set_footer(text="Ad-Free Music Player • 100% Free Forever")
+        embed.set_footer(text="YouTube audio via yt-dlp")
         return embed
 
     def skip(self):
-        """Skips the currently playing song."""
-        if self.voice_client and self.voice_client.is_playing():
+        """Skip the current song, including while resolving or paused."""
+        if not self.current:
+            return False
+
+        if self.voice_client and (
+            self.voice_client.is_playing() or self.voice_client.is_paused()
+        ):
             self.voice_client.stop()
             return True
-        return False
+
+        self.skip_requested = True
+        return True
+
+    def handle_voice_disconnect(self):
+        """Preserve the current track and wait for the next voice connection."""
+        self.voice_connected.clear()
+        voice_client = self.voice_client
+        self.voice_client = None
+
+        if self.current:
+            self.current.is_resolved = False
+            self.queue.appendleft(self.current)
+            self.current = None
+
+        if voice_client and (
+            voice_client.is_playing() or voice_client.is_paused()
+        ):
+            voice_client.stop()
 
     def pause(self) -> bool:
         """Pauses the current playback."""
@@ -360,87 +400,70 @@ class MusicManager:
 async def process_input_query(query: str, requester: str) -> Tuple[List[Song], str]:
     """
     Parses user input query.
-    Detects Spotify (tracks, playlists, albums), YouTube playlists, or standard search.
+    Accepts a YouTube playlist URL, a video URL, or one plain-text search.
     Returns: (list_of_songs, description_message)
     """
-    query = query.strip()
+    query = normalize_query(query)
 
-    # 1. Spotify Detection
-    if spotify_helper.is_spotify_url(query):
-        sp_type, data = spotify_helper.extract_spotify_info(query)
-        if sp_type == "track":
-            song = Song(
-                title=data,
-                query=f"ytsearch:{data}",
-                requester=requester,
-                source="Spotify",
-            )
-            return [song], f"Spotify Track: **{data}**"
-
-        elif sp_type in ("playlist", "album"):
-            if not data or not data.get("tracks"):
-                return [], f"Failed to extract tracks from Spotify {sp_type}."
-
-            title = data.get("title", f"Spotify {sp_type.capitalize()}")
-            songs = [
-                Song(
-                    title=track_query,
-                    query=f"ytsearch:{track_query}",
-                    requester=requester,
-                    source="Spotify",
-                )
-                for track_query in data["tracks"]
-            ]
-            return songs, f"Spotify {sp_type.capitalize()} **{title}** ({len(songs)} tracks)"
-
-    # 2. YouTube Playlist Detection
-    if ("youtube.com/playlist" in query or "list=" in query) and "watch?v=" not in query:
-        loop = asyncio.get_event_loop()
-        ydl = yt_dlp.YoutubeDL({"extract_flat": True, "quiet": True})
+    # Playlists are accepted only as YouTube URLs; text searches add one song.
+    query_lower = query.lower()
+    is_youtube_playlist = (
+        query.startswith(("http://", "https://"))
+        and ("youtube.com/playlist" in query_lower or "list=" in query_lower)
+    )
+    if is_youtube_playlist:
+        loop = asyncio.get_running_loop()
+        playlist_source = "YouTube"
+        ydl = yt_dlp.YoutubeDL(
+            {"extract_flat": True, "quiet": True, "ignoreerrors": False, "no_color": True}
+        )
         try:
             info = await loop.run_in_executor(
                 None,
                 functools.partial(ydl.extract_info, query, download=False)
             )
-            entries = info.get("entries", [])
-            playlist_title = info.get("title", "YouTube Playlist")
+            entries = info.get("entries", []) if info else []
+            playlist_title = info.get("title", f"{playlist_source} Playlist")
             songs = []
             for entry in entries:
                 if not entry:
                     continue
-                e_title = entry.get("title") or "YouTube Song"
+                e_title = entry.get("title") or f"{playlist_source} Track"
                 e_url = entry.get("url") or entry.get("webpage_url")
-                if e_url and not e_url.startswith("http"):
+                if (
+                    playlist_source == "YouTube"
+                    and e_url
+                    and not e_url.startswith("http")
+                    and entry.get("id")
+                ):
                     e_url = f"https://www.youtube.com/watch?v={entry.get('id')}"
                 songs.append(
                     Song(
                         title=e_title,
-                        query=e_url if e_url else e_title,
+                        query=e_url if e_url and e_url.startswith("http") else e_title,
                         webpage_url=e_url if e_url else "",
                         duration=int(entry.get("duration") or 0),
                         thumbnail=entry.get("thumbnail") or "",
                         requester=requester,
-                        source="YouTube",
+                        source=playlist_source,
                     )
                 )
             if songs:
-                return songs, f"YouTube Playlist **{playlist_title}** ({len(songs)} tracks)"
+                return songs, f"{playlist_source} Playlist **{playlist_title}** ({len(songs)} tracks)"
         except Exception as e:
-            logger.error(f"Error extracting YouTube playlist: {e}")
+            error_message = _friendly_ytdlp_error(e)
+            logger.error("Error extracting %s playlist: %s", playlist_source, error_message)
+            return [], f"Could not load the {playlist_source} playlist: {error_message}"
+        return [], f"Could not load the {playlist_source} playlist. Check that its link is public and playable."
 
     # 3. Direct URL or YouTube Search
     is_direct_url = query.startswith(("http://", "https://"))
-    is_soundcloud_url = "soundcloud.com/" in query.lower()
     search_query = query if is_direct_url else f"ytsearch1:{query}"
-    fallback_search = query if not is_direct_url else None
     try:
-        info, source = await _extract_with_fallback(
-            search_query,
-            fallback_search if not is_soundcloud_url else None,
-        )
+        info = await _extract_youtube(search_query)
 
         if not info:
-            return [], "No results found on YouTube or SoundCloud."
+            return [], "No YouTube results found."
 
         song = Song(
             title=info.get("title", query),
@@ -450,11 +473,12 @@ async def process_input_query(query: str, requester: str) -> Tuple[List[Song], s
             duration=int(info.get("duration") or 0),
             thumbnail=info.get("thumbnail") or "",
             requester=requester,
-            source="SoundCloud" if is_soundcloud_url else source,
+            source="YouTube",
         )
         song.is_resolved = bool(song.stream_url)
         return [song], f"**{song.title}**"
 
     except Exception as e:
-        logger.error("Error searching for audio: %s", e)
-        return [], f"Failed to search YouTube and SoundCloud: {str(e)}"
+        error_text = _friendly_ytdlp_error(e)
+        logger.error("Error searching YouTube: %s", error_text)
+        return [], f"YouTube could not provide playable audio: {error_text}"

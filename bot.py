@@ -17,7 +17,7 @@ if hasattr(sys.stderr, "reconfigure"):
 import discord
 from discord.ext import commands
 
-from config import DISCORD_TOKEN, COMMAND_PREFIX, FFMPEG_PATH
+from config import DISCORD_TOKEN, COMMAND_PREFIX, FFMPEG_PATH, validate_ffmpeg
 from music_player import MusicManager, process_input_query, Song
 
 # Logging configuration
@@ -91,7 +91,7 @@ async def on_voice_state_update(member, before, after):
     # Agar bot khud disconnect hua ho
     if member.id == bot.user.id and after.channel is None:
         player = music_manager.get_player(member.guild)
-        player.stop()
+        player.handle_voice_disconnect()
         return
 
     # Check the guild's active voice connection
@@ -129,7 +129,10 @@ async def ensure_voice_connection(ctx: commands.Context) -> Optional[discord.Voi
     voice_client = ctx.voice_client
 
     if not voice_client:
-        voice_client = await user_channel.connect()
+        voice_client = await user_channel.connect(reconnect=True)
+    elif not voice_client.is_connected():
+        await voice_client.disconnect(force=True)
+        voice_client = await user_channel.connect(reconnect=True)
     elif voice_client.channel != user_channel:
         await voice_client.move_to(user_channel)
 
@@ -142,10 +145,10 @@ async def ensure_voice_connection(ctx: commands.Context) -> Optional[discord.Voi
 
 @bot.hybrid_command(
     name="play",
-    description="Play YouTube or SoundCloud audio, or a Spotify link (track/playlist/album).",
+    description="Play a YouTube song by name or URL, or add a YouTube playlist URL.",
 )
 async def play(ctx: commands.Context, *, query: str):
-    """Play from YouTube, fall back to SoundCloud, or resolve a Spotify link."""
+    """Play a YouTube song by name or URL; playlist URLs add tracks in order."""
     # A voice connection or metadata lookup can take longer than Discord's
     # initial interaction window, so acknowledge only if it is still pending.
     if ctx.interaction and not ctx.interaction.response.is_done():
@@ -157,6 +160,7 @@ async def play(ctx: commands.Context, *, query: str):
 
     player = music_manager.get_player(ctx.guild)
     player.voice_client = voice_client
+    player.voice_connected.set()
     player.text_channel = ctx.channel
 
     requester_name = ctx.author.display_name
@@ -165,7 +169,7 @@ async def play(ctx: commands.Context, *, query: str):
     if not songs:
         embed = discord.Embed(
             title="🔍 No Results",
-            description=f"Could not find any playable songs for: `{query}`\nDetails: {desc}",
+            description=f"Could not find playable YouTube audio for: `{query}`\nDetails: {desc}",
             color=0xE74C3C,
         )
         await ctx.send(embed=embed)
@@ -198,7 +202,7 @@ async def play(ctx: commands.Context, *, query: str):
         )
         embed.add_field(name="🔢 Songs Queued", value=f"{len(songs)} tracks", inline=True)
         embed.add_field(name="👤 Requester", value=requester_name, inline=True)
-        embed.set_footer(text="Songs will play sequentially without ads!")
+        embed.set_footer(text="Tracks will play sequentially.")
         await ctx.send(embed=embed)
 
     # If nothing is currently playing, trigger playback immediately
@@ -227,9 +231,10 @@ async def resume(ctx: commands.Context):
 @bot.hybrid_command(name="skip", description="Skip to the next song in the queue.")
 async def skip(ctx: commands.Context):
     player = music_manager.get_player(ctx.guild)
-    if player.current and player.skip():
+    current_title = player.current.title if player.current else None
+    if player.skip():
         embed = discord.Embed(
-            description=f"⏭️ Skipped **{player.current.title}**",
+            description=f"⏭️ Skipped **{current_title}**",
             color=0x3498DB,
         )
         await ctx.send(embed=embed)
@@ -390,14 +395,14 @@ async def leave(ctx: commands.Context):
 @bot.hybrid_command(name="help", description="Show all available music bot commands.")
 async def help_command(ctx: commands.Context):
     embed = discord.Embed(
-        title="🎵 Free & Ad-Free Music Bot Commands",
-        description="Supports **YouTube** and **SoundCloud** search, plus **Spotify** tracks, playlists, and albums.",
+        title="🎵 YouTube Music Bot Commands",
+        description="Search for YouTube songs by name, play video URLs, or queue a YouTube playlist URL.",
         color=0x5865F2,
     )
     embed.add_field(
         name="🎶 Playback Commands",
         value=(
-            f"`{COMMAND_PREFIX}play <query/url>` or `/play` - Play YouTube, SoundCloud fallback, or Spotify\n"
+            f"`{COMMAND_PREFIX}play <query/url>` or `/play` - Play a YouTube song or queue a playlist URL\n"
             f"`{COMMAND_PREFIX}pause` or `/pause` - Pause music\n"
             f"`{COMMAND_PREFIX}resume` or `/resume` - Resume music\n"
             f"`{COMMAND_PREFIX}skip` or `/skip` - Skip current song\n"
@@ -455,6 +460,12 @@ def main():
         print("❌ ERROR: DISCORD_TOKEN is not set in the .env file!")
         print("👉 Please edit the '.env' file in this folder and paste your Discord bot token.")
         print("!" * 65 + "\n")
+        sys.exit(1)
+
+    try:
+        validate_ffmpeg()
+    except RuntimeError as error:
+        logger.critical("%s", error)
         sys.exit(1)
 
     start_render_http_server()

@@ -1,6 +1,5 @@
 discord.py[voice]
 yt-dlp
 python-dotenv
-requests
-spotipy
 PyNaCl
+imageio-ffmpeg==0.6.0

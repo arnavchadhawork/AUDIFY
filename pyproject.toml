@@ -4,4 +4,10 @@ version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "discord.py[voice]",
+    "yt-dlp",
+    "python-dotenv",
+    "PyNaCl",
+    "imageio-ffmpeg==0.6.0",
+]
