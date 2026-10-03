@@ -1,7 +1,7 @@
 import asyncio
 import functools
 import logging
-from typing import Optional, List, Dict, Any, Deque
+from typing import Optional, List, Dict, Any, Deque, Tuple
 from collections import deque
 
 import discord

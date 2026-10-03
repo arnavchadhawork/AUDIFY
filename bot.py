@@ -2,6 +2,8 @@ import os
 import sys
 import logging
 import random
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Optional
 
 # Ensure proper UTF-8 stdout encoding for Windows terminals
@@ -418,6 +420,33 @@ async def help_command(ctx: commands.Context):
     await ctx.send(embed=embed)
 
 
+class HealthHandler(BaseHTTPRequestHandler):
+    """Small HTTP endpoint so Render can detect that the service is up."""
+
+    def do_GET(self):
+        if self.path not in ("/", "/health"):
+            self.send_error(404)
+            return
+        body = b"Audify Discord bot is running.\n"
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format, *args):
+        logger.info("HTTP: " + format, *args)
+
+
+def start_render_http_server():
+    """Bind Render's assigned port without blocking the Discord event loop."""
+    port = int(os.environ.get("PORT", "10000"))
+    server = ThreadingHTTPServer(("0.0.0.0", port), HealthHandler)
+    threading.Thread(target=server.serve_forever, name="render-http", daemon=True).start()
+    logger.info("Render health server listening on 0.0.0.0:%s", port)
+    return server
+
+
 def main():
     if not DISCORD_TOKEN or DISCORD_TOKEN == "YOUR_BOT_TOKEN_HERE":
         print("\n" + "!" * 65)
@@ -425,6 +454,8 @@ def main():
         print("👉 Please edit the '.env' file in this folder and paste your Discord bot token.")
         print("!" * 65 + "\n")
         sys.exit(1)
+
+    start_render_http_server()
 
     try:
         bot.run(DISCORD_TOKEN)
