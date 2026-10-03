@@ -1,14 +1,13 @@
-# 🎵 Discord Free & Ad-Free Music Bot (Spotify + YouTube)
+# 🎵 Discord Music Bot (YouTube + SoundCloud + Spotify)
 
-Ye ek **100% Free, Ad-Free aur bina kisi subscription ke** chalne wala Discord Music Bot hai. 
-Ye **YouTube** (videos, playlists, search) aur **Spotify** (tracks, playlists, albums) dono ko bina kisi ad ke Discord voice channel mein stream karta hai!
+Ye ek Discord music bot hai jo **YouTube** (videos, playlists, search) aur **Spotify** links support karta hai. YouTube search fail hone par bot **SoundCloud** par fallback search karta hai. Spotify links se track metadata lekar YouTube/SoundCloud par audio search kiya jata hai.
 
 ---
 
 ## 🌟 Features
-- 🚫 **100% Ad-Free**: YouTube ke saare ads bypass ho jate hain, direct audio stream hota hai.
-- 🟢 **Spotify Support**: Spotify ke tracks, playlists, aur albums directly play karta hai (Bina Spotify Premium ke!).
+- 🟢 **Spotify Link Support**: Spotify tracks, playlists, aur albums ke metadata se audio search hota hai.
 - 🔴 **YouTube Support**: Song name search karein, video link dalein, ya puri YouTube playlist queue karein.
+- 🟠 **SoundCloud Fallback**: YouTube search fail hone par bot SoundCloud par search karke playable track queue karta hai.
 - ⚡ **Dual Commands**: Standard prefix commands (`!play`) aur modern slash commands (`/play`) dono support karta hai.
 - 🔌 **Instant Auto Disconnect**: Jaise hi Voice Channel khali hoga (saare users leave karenge), bot turant music stop karega aur VC se disconnect ho jayega.
 
@@ -70,7 +69,7 @@ Aap Prefix (`!`) ya Slash (`/`) dono use kar sakte hain:
 
 | Command | Shortcut / Slash | Description |
 |---|---|---|
-| `!play <song name ya link>` | `/play <query>` | YouTube song, YouTube link, ya Spotify track/playlist play karein |
+| `!play <song name ya link>` | `/play <query>` | YouTube song/link, YouTube search fail hone par SoundCloud fallback, ya Spotify track/playlist play karein |
 | `!pause` | `/pause` | Gaana pause karein |
 | `!resume` | `/resume` | Paused gaana resume karein |
 | `!skip` | `/skip` | Agle gaane par skip karein |

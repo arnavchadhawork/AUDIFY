@@ -142,10 +142,10 @@ async def ensure_voice_connection(ctx: commands.Context) -> Optional[discord.Voi
 
 @bot.hybrid_command(
     name="play",
-    description="Play a song, YouTube link, or Spotify link (track/playlist/album) ad-free!",
+    description="Play YouTube or SoundCloud audio, or a Spotify link (track/playlist/album).",
 )
 async def play(ctx: commands.Context, *, query: str):
-    """Plays song from YouTube search, YouTube link, or Spotify link."""
+    """Play from YouTube, fall back to SoundCloud, or resolve a Spotify link."""
     # A voice connection or metadata lookup can take longer than Discord's
     # initial interaction window, so acknowledge only if it is still pending.
     if ctx.interaction and not ctx.interaction.response.is_done():
@@ -391,13 +391,13 @@ async def leave(ctx: commands.Context):
 async def help_command(ctx: commands.Context):
     embed = discord.Embed(
         title="🎵 Free & Ad-Free Music Bot Commands",
-        description="Supports **YouTube** (videos, playlists, search) & **Spotify** (tracks, playlists, albums) without ads or subscriptions!",
+        description="Supports **YouTube** and **SoundCloud** search, plus **Spotify** tracks, playlists, and albums.",
         color=0x5865F2,
     )
     embed.add_field(
         name="🎶 Playback Commands",
         value=(
-            f"`{COMMAND_PREFIX}play <query/url>` or `/play` - Play YouTube or Spotify\n"
+            f"`{COMMAND_PREFIX}play <query/url>` or `/play` - Play YouTube, SoundCloud fallback, or Spotify\n"
             f"`{COMMAND_PREFIX}pause` or `/pause` - Pause music\n"
             f"`{COMMAND_PREFIX}resume` or `/resume` - Resume music\n"
             f"`{COMMAND_PREFIX}skip` or `/skip` - Skip current song\n"

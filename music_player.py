@@ -34,6 +34,57 @@ FFMPEG_OPTIONS = {
 }
 
 
+def _first_entry(info: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not info:
+        return None
+    if "entries" not in info:
+        return info
+    return next((entry for entry in info["entries"] if entry), None)
+
+
+async def _extract_with_fallback(
+    query: str,
+    fallback_search: Optional[str] = None,
+) -> Tuple[Optional[Dict[str, Any]], str]:
+    """Try the requested yt-dlp query, then search SoundCloud if provided."""
+    loop = asyncio.get_running_loop()
+
+    def extract(search_query: str) -> Optional[Dict[str, Any]]:
+        ydl = yt_dlp.YoutubeDL(dict(YTDL_BASE_OPTS))
+        return _first_entry(ydl.extract_info(search_query, download=False))
+
+    try:
+        info = await loop.run_in_executor(None, functools.partial(extract, query))
+        if info:
+            return info, "YouTube"
+        youtube_error = "No results found."
+    except Exception as exc:
+        youtube_error = str(exc)
+
+    if not fallback_search:
+        logger.warning("YouTube lookup failed; no SoundCloud fallback is available.")
+        return None, "YouTube"
+
+    try:
+        info = await loop.run_in_executor(
+            None,
+            functools.partial(extract, f"scsearch1:{fallback_search}"),
+        )
+        if info:
+            logger.info("YouTube lookup failed; using SoundCloud fallback.")
+            return info, "SoundCloud"
+        soundcloud_error = "No results found."
+    except Exception as exc:
+        soundcloud_error = str(exc)
+
+    logger.error(
+        "Audio lookup failed on YouTube and SoundCloud. YouTube: %s; SoundCloud: %s",
+        youtube_error,
+        soundcloud_error,
+    )
+    return None, "SoundCloud"
+
+
 def format_duration(seconds: Optional[int]) -> str:
     """Format duration in seconds to MM:SS or HH:MM:SS."""
     if not seconds or seconds <= 0:
@@ -179,18 +230,7 @@ class GuildPlayer:
         """Extracts direct audio stream URL using yt-dlp."""
         query = song.query if song.query else song.title
         try:
-            loop = asyncio.get_event_loop()
-            ydl_opts = dict(YTDL_BASE_OPTS)
-            ydl = yt_dlp.YoutubeDL(ydl_opts)
-
-            # Extract info in separate executor thread so it doesn't freeze the bot
-            info = await loop.run_in_executor(
-                None,
-                functools.partial(ydl.extract_info, query, download=False)
-            )
-
-            if "entries" in info and info["entries"]:
-                info = info["entries"][0]
+            info, source = await _extract_with_fallback(query, song.title)
 
             if not info or "url" not in info:
                 return False
@@ -200,6 +240,7 @@ class GuildPlayer:
             song.webpage_url = info.get("webpage_url", song.webpage_url)
             song.duration = info.get("duration", song.duration)
             song.thumbnail = info.get("thumbnail", song.thumbnail)
+            song.source = source
             song.is_resolved = True
             return True
         except Exception as e:
@@ -208,7 +249,8 @@ class GuildPlayer:
 
     def create_now_playing_embed(self, song: Song) -> discord.Embed:
         """Creates a modern Discord embed for the currently playing song."""
-        color = 0x1DB954 if song.source == "Spotify" else 0xFF0000
+        colors = {"Spotify": 0x1DB954, "SoundCloud": 0xFF5500}
+        color = colors.get(song.source, 0xFF0000)
         embed = discord.Embed(
             title="🎶 Now Playing",
             description=f"**[{song.title}]({song.webpage_url if song.webpage_url else 'https://youtube.com'})**",
@@ -387,21 +429,18 @@ async def process_input_query(query: str, requester: str) -> Tuple[List[Song], s
             logger.error(f"Error extracting YouTube playlist: {e}")
 
     # 3. Direct URL or YouTube Search
-    is_direct_url = query.startswith("http://") or query.startswith("https://")
-    search_query = query if is_direct_url else f"ytsearch:{query}"
-
-    loop = asyncio.get_event_loop()
-    ydl = yt_dlp.YoutubeDL(YTDL_BASE_OPTS)
+    is_direct_url = query.startswith(("http://", "https://"))
+    is_soundcloud_url = "soundcloud.com/" in query.lower()
+    search_query = query if is_direct_url else f"ytsearch1:{query}"
+    fallback_search = query if not is_direct_url else None
     try:
-        info = await loop.run_in_executor(
-            None,
-            functools.partial(ydl.extract_info, search_query, download=False)
+        info, source = await _extract_with_fallback(
+            search_query,
+            fallback_search if not is_soundcloud_url else None,
         )
-        if "entries" in info and info["entries"]:
-            info = info["entries"][0]
 
         if not info:
-            return [], "No results found."
+            return [], "No results found on YouTube or SoundCloud."
 
         song = Song(
             title=info.get("title", query),
@@ -411,11 +450,11 @@ async def process_input_query(query: str, requester: str) -> Tuple[List[Song], s
             duration=int(info.get("duration") or 0),
             thumbnail=info.get("thumbnail") or "",
             requester=requester,
-            source="YouTube",
+            source="SoundCloud" if is_soundcloud_url else source,
         )
         song.is_resolved = bool(song.stream_url)
         return [song], f"**{song.title}**"
 
     except Exception as e:
-        logger.error(f"Error searching song: {e}")
-        return [], f"Failed to search: {str(e)}"
+        logger.error("Error searching for audio: %s", e)
+        return [], f"Failed to search YouTube and SoundCloud: {str(e)}"
