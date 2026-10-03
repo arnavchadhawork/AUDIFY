@@ -29,7 +29,7 @@ Ye **YouTube** (videos, playlists, search) aur **Spotify** (tracks, playlists, a
    - **"Save Changes"** dabayein.
 
 ### Step 2: Bot Token `.env` File Mein Daalein
-1. Folder `discord-music-bot` mein jaayein.
+1. Project root folder (jahan `bot.py` hai) mein `.env` file banayein.
 2. `.env` file ko Notepad ya kisi editor mein kholein:
    ```env
    DISCORD_TOKEN=yahan_apna_discord_bot_token_paste_karein

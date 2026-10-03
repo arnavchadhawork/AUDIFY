@@ -147,8 +147,9 @@ async def ensure_voice_connection(ctx: commands.Context) -> Optional[discord.Voi
 async def play(ctx: commands.Context, *, query: str):
     """Plays song from YouTube search, YouTube link, or Spotify link."""
     # A voice connection or metadata lookup can take longer than Discord's
-    # initial interaction window, so acknowledge slash commands immediately.
-    await ctx.defer()
+    # initial interaction window, so acknowledge only if it is still pending.
+    if ctx.interaction and not ctx.interaction.response.is_done():
+        await ctx.defer()
 
     voice_client = await ensure_voice_connection(ctx)
     if not voice_client:
