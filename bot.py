@@ -1,7 +1,6 @@
 import os
 import sys
 import logging
-import random
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Optional
@@ -145,10 +144,10 @@ async def ensure_voice_connection(ctx: commands.Context) -> Optional[discord.Voi
 
 @bot.hybrid_command(
     name="play",
-    description="Play a YouTube song by name or URL, or add a YouTube playlist URL.",
+    description="Play a song or queue YouTube/Spotify links and playlists.",
 )
 async def play(ctx: commands.Context, *, query: str):
-    """Play a YouTube song by name or URL; playlist URLs add tracks in order."""
+    """Search or play links and queue playlist tracks in order."""
     # A voice connection or metadata lookup can take longer than Discord's
     # initial interaction window, so acknowledge only if it is still pending.
     if ctx.interaction and not ctx.interaction.response.is_done():
@@ -169,7 +168,7 @@ async def play(ctx: commands.Context, *, query: str):
     if not songs:
         embed = discord.Embed(
             title="🔍 No Results",
-            description=f"Could not find playable YouTube audio for: `{query}`\nDetails: {desc}",
+            description=f"Could not find playable audio for: `{query}`\nDetails: {desc}",
             color=0xE74C3C,
         )
         await ctx.send(embed=embed)
@@ -210,24 +209,6 @@ async def play(ctx: commands.Context, *, query: str):
         player.play_next_song.set()
 
 
-@bot.hybrid_command(name="pause", description="Pause the currently playing song.")
-async def pause(ctx: commands.Context):
-    player = music_manager.get_player(ctx.guild)
-    if player.pause():
-        await ctx.send("⏸️ **Playback paused.** Type `!resume` or `/resume` to continue.")
-    else:
-        await ctx.send("⚠️ Nothing is currently playing to pause.")
-
-
-@bot.hybrid_command(name="resume", description="Resume the paused song.")
-async def resume(ctx: commands.Context):
-    player = music_manager.get_player(ctx.guild)
-    if player.resume():
-        await ctx.send("▶️ **Playback resumed!**")
-    else:
-        await ctx.send("⚠️ Playback is not paused.")
-
-
 @bot.hybrid_command(name="skip", description="Skip to the next song in the queue.")
 async def skip(ctx: commands.Context):
     player = music_manager.get_player(ctx.guild)
@@ -240,191 +221,6 @@ async def skip(ctx: commands.Context):
         await ctx.send(embed=embed)
     else:
         await ctx.send("⚠️ No song is currently playing to skip.")
-
-
-@bot.hybrid_command(name="stop", description="Stop music, clear queue, and disconnect.")
-async def stop(ctx: commands.Context):
-    player = music_manager.get_player(ctx.guild)
-    player.stop()
-    if ctx.voice_client:
-        await ctx.voice_client.disconnect()
-    embed = discord.Embed(
-        description="⏹️ **Music stopped, queue cleared, and disconnected.**",
-        color=0xE74C3C,
-    )
-    await ctx.send(embed=embed)
-
-
-@bot.hybrid_command(name="queue", description="Show the list of upcoming songs.")
-async def queue(ctx: commands.Context):
-    player = music_manager.get_player(ctx.guild)
-
-    if not player.current and not player.queue:
-        await ctx.send("📭 **The queue is currently empty.** Add songs with `!play <song>`!")
-        return
-
-    embed = discord.Embed(
-        title="📋 Server Music Queue",
-        color=0x9B59B6,
-    )
-
-    if player.current:
-        embed.add_field(
-            name="▶️ Currently Playing",
-            value=f"**[{player.current.title}]({player.current.webpage_url})** | `{player.current.duration_str}` (by {player.current.requester})",
-            inline=False,
-        )
-
-    if player.queue:
-        queue_text = []
-        # Show first 10 tracks
-        for idx, song in enumerate(list(player.queue)[:10], start=1):
-            queue_text.append(f"`{idx}.` **{song.title}** (`{song.duration_str}`) - *{song.requester}*")
-
-        more_count = len(player.queue) - 10
-        if more_count > 0:
-            queue_text.append(f"\n*...and {more_count} more songs in queue.*")
-
-        embed.add_field(
-            name=f"Up Next ({len(player.queue)} songs)",
-            value="\n".join(queue_text),
-            inline=False,
-        )
-    else:
-        embed.add_field(name="Up Next", value="No upcoming songs.", inline=False)
-
-    loop_status = {
-        "off": "Off",
-        "one": "🔂 Current Track",
-        "all": "🔁 Entire Queue",
-    }.get(player.loop_mode, "Off")
-    embed.set_footer(text=f"Loop: {loop_status} • Volume: {int(player.volume * 100)}%")
-    await ctx.send(embed=embed)
-
-
-@bot.hybrid_command(name="nowplaying", aliases=["np"], description="Show info about the song currently playing.")
-async def nowplaying(ctx: commands.Context):
-    player = music_manager.get_player(ctx.guild)
-    if not player.current:
-        await ctx.send("🔇 Nothing is playing right now.")
-        return
-
-    embed = player.create_now_playing_embed(player.current)
-    await ctx.send(embed=embed)
-
-
-@bot.hybrid_command(name="volume", description="Change playback volume (1-100%).")
-async def volume(ctx: commands.Context, level: int):
-    if level < 1 or level > 100:
-        await ctx.send("⚠️ Volume must be between 1 and 100.")
-        return
-
-    player = music_manager.get_player(ctx.guild)
-    player.set_volume(level / 100.0)
-    await ctx.send(f"🔊 Volume set to **{level}%**")
-
-
-@bot.hybrid_command(
-    name="loop",
-    description="Toggle looping mode: off, one (single song), or all (queue).",
-)
-async def loop(ctx: commands.Context, mode: Optional[str] = None):
-    player = music_manager.get_player(ctx.guild)
-
-    if mode:
-        mode = mode.lower()
-        if mode in ("off", "none", "disable"):
-            player.loop_mode = "off"
-        elif mode in ("one", "single", "track", "current"):
-            player.loop_mode = "one"
-        elif mode in ("all", "queue"):
-            player.loop_mode = "all"
-        else:
-            await ctx.send("⚠️ Valid modes are: `off`, `one`, `all`")
-            return
-    else:
-        # Cycle through modes
-        cycles = {"off": "one", "one": "all", "all": "off"}
-        player.loop_mode = cycles.get(player.loop_mode, "off")
-
-    mode_labels = {
-        "off": "❌ Loop Disabled",
-        "one": "🔂 Looping Current Song",
-        "all": "🔁 Looping Entire Queue",
-    }
-    await ctx.send(f"🔄 **{mode_labels[player.loop_mode]}**")
-
-
-@bot.hybrid_command(name="shuffle", description="Shuffle all songs currently in the queue.")
-async def shuffle(ctx: commands.Context):
-    player = music_manager.get_player(ctx.guild)
-    if len(player.queue) < 2:
-        await ctx.send("⚠️ Need at least 2 songs in the queue to shuffle.")
-        return
-
-    queue_list = list(player.queue)
-    random.shuffle(queue_list)
-    player.queue.clear()
-    player.queue.extend(queue_list)
-    await ctx.send(f"🔀 **Shuffled {len(player.queue)} songs in the queue!**")
-
-
-@bot.hybrid_command(name="remove", description="Remove a specific song from queue by its index number.")
-async def remove(ctx: commands.Context, index: int):
-    player = music_manager.get_player(ctx.guild)
-    if index < 1 or index > len(player.queue):
-        await ctx.send(f"⚠️ Invalid song number. Current queue has {len(player.queue)} songs.")
-        return
-
-    removed_song = player.queue[index - 1]
-    del player.queue[index - 1]
-    await ctx.send(f"🗑️ Removed **{removed_song.title}** from the queue.")
-
-
-@bot.hybrid_command(name="leave", aliases=["disconnect", "dc"], description="Disconnect bot from the voice channel.")
-async def leave(ctx: commands.Context):
-    player = music_manager.get_player(ctx.guild)
-    player.stop()
-    if ctx.voice_client:
-        await ctx.voice_client.disconnect()
-        await ctx.send("👋 Disconnected from voice channel.")
-    else:
-        await ctx.send("⚠️ I am not connected to any voice channel.")
-
-
-@bot.hybrid_command(name="help", description="Show all available music bot commands.")
-async def help_command(ctx: commands.Context):
-    embed = discord.Embed(
-        title="🎵 YouTube Music Bot Commands",
-        description="Search for YouTube songs by name, play video URLs, or queue a YouTube playlist URL.",
-        color=0x5865F2,
-    )
-    embed.add_field(
-        name="🎶 Playback Commands",
-        value=(
-            f"`{COMMAND_PREFIX}play <query/url>` or `/play` - Play a YouTube song or queue a playlist URL\n"
-            f"`{COMMAND_PREFIX}pause` or `/pause` - Pause music\n"
-            f"`{COMMAND_PREFIX}resume` or `/resume` - Resume music\n"
-            f"`{COMMAND_PREFIX}skip` or `/skip` - Skip current song\n"
-            f"`{COMMAND_PREFIX}stop` or `/stop` - Stop & clear queue"
-        ),
-        inline=False,
-    )
-    embed.add_field(
-        name="📋 Queue & Controls",
-        value=(
-            f"`{COMMAND_PREFIX}queue` or `/queue` - View upcoming songs\n"
-            f"`{COMMAND_PREFIX}nowplaying` (`!np`) - Song details\n"
-            f"`{COMMAND_PREFIX}volume <1-100>` - Set volume\n"
-            f"`{COMMAND_PREFIX}loop [off/one/all]` - Toggle loop\n"
-            f"`{COMMAND_PREFIX}shuffle` - Randomize queue\n"
-            f"`{COMMAND_PREFIX}remove <number>` - Remove track\n"
-            f"`{COMMAND_PREFIX}leave` - Disconnect bot"
-        ),
-        inline=False,
-    )
-    embed.set_footer(text="Tip: You can use both !prefix and /slash commands!")
-    await ctx.send(embed=embed)
 
 
 class HealthHandler(BaseHTTPRequestHandler):

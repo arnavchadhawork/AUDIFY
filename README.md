@@ -1,17 +1,13 @@
-# 🎵 Discord YouTube Music Bot
+# 🎵 Audify Discord Music Bot
 
-Ye Discord music bot sirf **yt-dlp** se YouTube par gaana naam se search karta hai aur video URLs play karta hai. YouTube playlist sirf playlist URL se add hoti hai. Playback YouTube/yt-dlp ki availability par depend karta hai; Render jaise hosts par YouTube bot checks ki wajah se kuch requests fail ho sakti hain. FFmpeg system par nahi milne par `imageio-ffmpeg` ka bundled executable use hota hai.
+Ye Discord bot YouTube search, YouTube links/playlists, aur Spotify track/album/playlist links ko support karta hai. Spotify metadata se har track ka YouTube audio match search hota hai; Spotify ka audio stream directly play nahi hota. Playback YouTube/yt-dlp ki availability par depend karta hai. FFmpeg system par nahi milne par `imageio-ffmpeg` ka bundled executable use hota hai.
 
 ---
 
 ## 🌟 Features
-- 🔴 **YouTube Support**: Song name search karein, video URL play karein, ya playlist URL se playlist queue karein.
-- ⚡ **Dual Commands**: Standard prefix commands (`!play`) aur modern slash commands (`/play`) dono support karta hai.
-- 📋 **Sequential Queue**: Playing song ke dauran add kiye gaye songs queue mein rehte hain aur baari-baari play hote hain. Playlist sirf playlist URL se add hoti hai; plain text ek song search karta hai.
-- 🔁 **Voice Recovery**: Voice connection temporarily drops hone par current track queue mein preserve hota hai aur connection wapas aane par dobara play hota hai.
-- 🔌 **Instant Auto Disconnect**: Jaise hi Voice Channel khali hoga (saare users leave karenge), bot turant music stop karega aur VC se disconnect ho jayega.
-
-
+- **Play:** `/play <query>` or `!play <query>` plays or queues a YouTube URL, Spotify track/album/playlist, or song-name search.
+- **Skip:** `/skip` or `!skip` skips the currently playing song.
+- Songs and playlist tracks are queued in order while another song is playing. Spotify tracks are matched to YouTube audio; streams are resolved when each track is about to play, so queued tracks do not rely on stale stream URLs.
 ---
 
 ## 🚀 Setup Guide (Step-by-Step)
@@ -34,6 +30,13 @@ Ye Discord music bot sirf **yt-dlp** se YouTube par gaana naam se search karta h
    DISCORD_TOKEN=yahan_apna_discord_bot_token_paste_karein
    ```
 3. File save kar lein.
+4. Spotify links ke liye [Spotify Developer Dashboard](https://developer.spotify.com/dashboard) se app banayein aur uska Client ID/Client Secret bhi `.env` mein add karein:
+   ```env
+   SPOTIFY_CLIENT_ID=your_spotify_client_id
+   SPOTIFY_CLIENT_SECRET=your_spotify_client_secret
+   SPOTIFY_MARKET=IN
+   ```
+   `SPOTIFY_MARKET` optional hai; apna two-letter country code use karein. Spotify links public hone chahiye. Spotify audio nahi, YouTube par milta hua audio chalega.
 
 ### Step 3: Bot Ko Apne Server Mein Invite Karein
 1. Developer portal mein **"Installation"** ya **"OAuth2" -> "URL Generator"** par jayein:
@@ -50,12 +53,14 @@ Ye Discord music bot sirf **yt-dlp** se YouTube par gaana naam se search karta h
 
 ## ▶️ Bot Kaise Chalayein
 
-Windows par bot chalana behad aasan hai:
-- `run.bat` file par **Double Click** karein!
-- Ya terminal mein command chalayein:
+Project folder (`AUDIFY`) mein pehle locked dependencies ke saath `.venv` banayein:
   ```powershell
-  python bot.py
+  uv sync --locked
   ```
+
+Isse `.venv` folder create hoga. Uske baad:
+- Windows par `run.bat` par **Double Click** karein, ya
+- Terminal mein `uv run python bot.py` chalayein.
 
 Jab terminal par:
 `🤖 YOUR BOT IS ONLINE & READY!`
@@ -63,33 +68,23 @@ likha aa jaye, iska matlab aapka bot ready hai!
 
 ### Render Deployment
 
-Render par **Python** runtime use karein (Docker nahi). Build command `python -m pip install --upgrade -r requirements.txt yt-dlp` aur start command `python bot.py` set karein. Render dashboard mein `DISCORD_TOKEN` environment variable add karein; secret ko repository mein commit na karein. Har deploy par **Clear build cache & deploy** chunein. Bot startup par FFmpeg binary verify karta hai aur FFmpeg missing/broken hone par playback ke waqt chup-chaap fail hone ke bajaye clear startup error deta hai.
+Render par **Python** runtime use karein (Docker nahi). Build command `uv sync --locked` aur start command `uv run python bot.py` set karein. Render dashboard mein `DISCORD_TOKEN` add karein; Spotify links enable karne ke liye `SPOTIFY_CLIENT_ID` aur `SPOTIFY_CLIENT_SECRET` bhi add karein. Secrets ko repository mein commit na karein. Bot startup par FFmpeg binary verify karta hai aur FFmpeg missing/broken hone par clear startup error deta hai.
 
 ---
 
 ## 📜 Commands List
 
-Aap Prefix (`!`) ya Slash (`/`) dono use kar sakte hain:
+Aap sirf ye do commands use kar sakte hain, Prefix (`!`) ya Slash (`/`) dono ke saath:
 
 | Command | Shortcut / Slash | Description |
 |---|---|---|
-| `!play <song name ya link>` | `/play <query>` | Song name ya video URL play/queue karein. Playlist ke liye playlist URL dein. |
-| `!pause` | `/pause` | Gaana pause karein |
-| `!resume` | `/resume` | Paused gaana resume karein |
-| `!skip` | `/skip` | Agle gaane par skip karein |
-| `!queue` | `/queue` | Upcoming gaano ki list dekhein |
-| `!nowplaying` | `/nowplaying` ya `!np` | Current song aur duration ki details dekhein |
-| `!volume <1-100>` | `/volume <level>` | Volume adjust karein (e.g. `!volume 80`) |
-| `!loop` | `/loop` | Loop switch karein: Off / Single Track / Entire Queue |
-| `!shuffle` | `/shuffle` | Queue ke saare gaano ko shuffle karein |
-| `!remove <number>` | `/remove <index>` | Queue se specific gaana hatayein (e.g. `!remove 3`) |
-| `!stop` | `/stop` | Music stop karein aur queue clear karein |
-| `!leave` | `/leave` | Bot ko voice channel se disconnect karein |
-| `!help` | `/help` | Saari commands ka help menu dekhein |
+| `!play <song name ya link>` | `/play <query>` | Gaana search/play karein ya YouTube/Spotify playlist ke tracks queue karein. |
+| `!skip` | `/skip` | Abhi chal raha gaana skip karein. |
 
 ---
 
 ## 💡 Examples
 - YouTube Direct: `!play https://www.youtube.com/watch?v=kJQP7kiw5Fk`
 - YouTube Playlist: `!play https://www.youtube.com/playlist?list=PLAYLIST_ID`
+- Spotify Track/Playlist: `!play https://open.spotify.com/track/TRACK_ID` or `!play https://open.spotify.com/playlist/PLAYLIST_ID`
 - Song Name Search: `!play arijit singh kesariya`

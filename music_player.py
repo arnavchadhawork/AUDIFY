@@ -1,14 +1,25 @@
 import asyncio
+import base64
 import functools
+import json
 import logging
 import re
+import urllib.error
+import urllib.parse
+import urllib.request
 from typing import Optional, List, Dict, Any, Deque, Tuple
 from collections import deque
 
 import discord
 import yt_dlp
 
-from config import COMMAND_PREFIX, FFMPEG_PATH
+from config import (
+    COMMAND_PREFIX,
+    FFMPEG_PATH,
+    SPOTIFY_CLIENT_ID,
+    SPOTIFY_CLIENT_SECRET,
+    SPOTIFY_MARKET,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +61,7 @@ def normalize_query(query: str) -> str:
     return query
 
 
-def _friendly_ytdlp_error(error: Exception) -> str:
+def _friendly_source_error(error: Exception) -> str:
     message = re.sub(r"\x1b\[[0-9;]*m", "", str(error))
     if "sign in to confirm" in message.lower() or "not a bot" in message.lower():
         return "YouTube is blocking requests from this server. Try again later; FFmpeg settings will not fix this."
@@ -63,6 +74,109 @@ def _first_entry(info: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     if "entries" not in info:
         return info
     return next((entry for entry in info["entries"] if entry), None)
+
+
+def _spotify_url_parts(query: str) -> Optional[Tuple[str, str]]:
+    parsed = urllib.parse.urlsplit(query)
+    if parsed.hostname not in ("open.spotify.com", "www.open.spotify.com"):
+        return None
+
+    parts = [part for part in parsed.path.split("/") if part]
+    while parts and (parts[0] == "embed" or parts[0].startswith("intl-")):
+        parts.pop(0)
+    if (
+        len(parts) < 2
+        or parts[0] not in ("track", "album", "playlist")
+        or not re.fullmatch(r"[A-Za-z0-9]+", parts[1])
+    ):
+        raise ValueError("Use a Spotify track, album, or playlist link.")
+    return parts[0], parts[1]
+
+
+def _spotify_api_json(url: str, headers: Dict[str, str], data: Optional[bytes] = None) -> Dict[str, Any]:
+    request = urllib.request.Request(url, data=data, headers=headers)
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        response_body = error.read().decode("utf-8", errors="replace")
+        try:
+            message = json.loads(response_body).get("error", {}).get("message")
+        except (json.JSONDecodeError, AttributeError):
+            message = None
+        detail = f": {message}" if message else ""
+        raise RuntimeError(f"Spotify API request failed (HTTP {error.code}){detail}") from error
+
+
+def _spotify_access_token() -> str:
+    if not SPOTIFY_CLIENT_ID or not SPOTIFY_CLIENT_SECRET:
+        raise RuntimeError(
+            "Spotify links need SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET in the .env file."
+        )
+
+    credentials = f"{SPOTIFY_CLIENT_ID}:{SPOTIFY_CLIENT_SECRET}".encode("utf-8")
+    authorization = base64.b64encode(credentials).decode("ascii")
+    token_data = _spotify_api_json(
+        "https://accounts.spotify.com/api/token",
+        {
+            "Authorization": f"Basic {authorization}",
+            "Content-Type": "application/x-www-form-urlencoded",
+        },
+        data=urllib.parse.urlencode({"grant_type": "client_credentials"}).encode("ascii"),
+    )
+    access_token = token_data.get("access_token")
+    if not access_token:
+        raise RuntimeError("Spotify did not return an access token.")
+    return access_token
+
+
+def _spotify_track_query(track: Dict[str, Any]) -> Optional[Tuple[str, str, int, str]]:
+    if not track or track.get("is_local") or not track.get("name"):
+        return None
+    artists = [
+        artist.get("name", "")
+        for artist in (track.get("artists") or [])
+        if artist and artist.get("name")
+    ]
+    title = track["name"]
+    search = f"{title} {' '.join(artists)}".strip()
+    spotify_url = (track.get("external_urls") or {}).get("spotify", "")
+    duration = int(track.get("duration_ms") or 0) // 1000
+    return title, search, duration, spotify_url
+
+
+def _load_spotify_metadata(kind: str, spotify_id: str) -> Tuple[str, List[Tuple[str, str, int, str]]]:
+    access_token = _spotify_access_token()
+    path = f"https://api.spotify.com/v1/{kind}s/{spotify_id}"
+    query_params = {"market": SPOTIFY_MARKET} if SPOTIFY_MARKET else {}
+    if query_params:
+        path = f"{path}?{urllib.parse.urlencode(query_params)}"
+
+    headers = {"Authorization": f"Bearer {access_token}"}
+    metadata = _spotify_api_json(path, headers)
+    if kind == "track":
+        track = _spotify_track_query(metadata)
+        return metadata.get("name", "Spotify track"), [track] if track else []
+
+    collection = metadata.get("tracks", {})
+    playlist_name = metadata.get("name") or f"Spotify {kind}"
+    tracks: List[Tuple[str, str, int, str]] = []
+    while collection:
+        for item in collection.get("items", []):
+            track_data = item.get("track") if kind == "playlist" else item
+            track = _spotify_track_query(track_data)
+            if track:
+                tracks.append(track)
+
+        next_url = collection.get("next")
+        if not next_url:
+            break
+        next_parts = urllib.parse.urlsplit(next_url)
+        if next_parts.scheme != "https" or next_parts.hostname != "api.spotify.com":
+            raise RuntimeError("Spotify returned an unexpected pagination URL.")
+        collection = _spotify_api_json(next_url, headers)
+
+    return playlist_name, tracks
 
 
 async def _extract_youtube(query: str) -> Optional[Dict[str, Any]]:
@@ -399,11 +513,43 @@ class MusicManager:
 
 async def process_input_query(query: str, requester: str) -> Tuple[List[Song], str]:
     """
-    Parses user input query.
-    Accepts a YouTube playlist URL, a video URL, or one plain-text search.
+    Accepts Spotify or YouTube URLs, YouTube playlist URLs, or one plain-text search.
     Returns: (list_of_songs, description_message)
     """
     query = normalize_query(query)
+
+    try:
+        spotify_parts = _spotify_url_parts(query)
+    except ValueError as error:
+        return [], str(error)
+    if spotify_parts:
+        kind, spotify_id = spotify_parts
+        loop = asyncio.get_running_loop()
+        try:
+            playlist_name, spotify_tracks = await loop.run_in_executor(
+                None,
+                functools.partial(_load_spotify_metadata, kind, spotify_id),
+            )
+            songs = [
+                Song(
+                    title=title,
+                    query=search_query,
+                    webpage_url=spotify_url,
+                    duration=duration,
+                    requester=requester,
+                    source="Spotify",
+                )
+                for title, search_query, duration, spotify_url in spotify_tracks
+            ]
+            if not songs:
+                return [], f"No playable tracks were found in Spotify {kind}: **{playlist_name}**."
+            if kind == "track":
+                return songs, f"Spotify track **{playlist_name}**"
+            return songs, f"Spotify {kind} **{playlist_name}** ({len(songs)} tracks)"
+        except Exception as error:
+            error_message = _friendly_source_error(error)
+            logger.error("Error loading Spotify %s: %s", kind, error_message)
+            return [], f"Could not load Spotify {kind}: {error_message}"
 
     # Playlists are accepted only as YouTube URLs; text searches add one song.
     query_lower = query.lower()
@@ -451,12 +597,12 @@ async def process_input_query(query: str, requester: str) -> Tuple[List[Song], s
             if songs:
                 return songs, f"{playlist_source} Playlist **{playlist_title}** ({len(songs)} tracks)"
         except Exception as e:
-            error_message = _friendly_ytdlp_error(e)
+            error_message = _friendly_source_error(e)
             logger.error("Error extracting %s playlist: %s", playlist_source, error_message)
             return [], f"Could not load the {playlist_source} playlist: {error_message}"
         return [], f"Could not load the {playlist_source} playlist. Check that its link is public and playable."
 
-    # 3. Direct URL or YouTube Search
+    # Direct YouTube URL or YouTube search
     is_direct_url = query.startswith(("http://", "https://"))
     search_query = query if is_direct_url else f"ytsearch1:{query}"
     try:
@@ -467,18 +613,16 @@ async def process_input_query(query: str, requester: str) -> Tuple[List[Song], s
 
         song = Song(
             title=info.get("title", query),
-            query=info.get("url", search_query),
+            query=info.get("webpage_url", query),
             webpage_url=info.get("webpage_url", query),
-            stream_url=info.get("url", ""),
             duration=int(info.get("duration") or 0),
             thumbnail=info.get("thumbnail") or "",
             requester=requester,
             source="YouTube",
         )
-        song.is_resolved = bool(song.stream_url)
         return [song], f"**{song.title}**"
 
     except Exception as e:
-        error_text = _friendly_ytdlp_error(e)
+        error_text = _friendly_source_error(e)
         logger.error("Error searching YouTube: %s", error_text)
         return [], f"YouTube could not provide playable audio: {error_text}"

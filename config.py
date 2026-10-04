@@ -14,6 +14,11 @@ DISCORD_TOKEN = os.getenv("DISCORD_TOKEN", "")
 # Command Prefix (default: !)
 COMMAND_PREFIX = os.getenv("COMMAND_PREFIX", "!")
 
+# Spotify Web API credentials are only needed for Spotify links.
+SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID", "").strip()
+SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET", "").strip()
+SPOTIFY_MARKET = os.getenv("SPOTIFY_MARKET", "").strip().upper()
+
 def find_ffmpeg() -> str:
     """
     Find a system FFmpeg executable, falling back to the bundled imageio binary.
