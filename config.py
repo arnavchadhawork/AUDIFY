@@ -1,100 +1,69 @@
 import os
-import subprocess
 import shutil
-import glob
+import subprocess
 from pathlib import Path
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
+# Load environment variables from .env file when running locally.
 load_dotenv()
 
-# Discord Bot Token
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN", "")
-
-# Command Prefix (default: !)
 COMMAND_PREFIX = os.getenv("COMMAND_PREFIX", "!")
+SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID", "")
+SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET", "")
 
-# Spotify Web API credentials are only needed for Spotify links.
-SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID", "").strip()
-SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET", "").strip()
-SPOTIFY_MARKET = os.getenv("SPOTIFY_MARKET", "").strip().upper()
 
-def find_ffmpeg() -> str:
-    """
-    Find a system FFmpeg executable, falling back to the bundled imageio binary.
-    """
-    configured_path = os.getenv("FFMPEG_PATH")
-    if configured_path:
-        configured_executable = shutil.which(configured_path)
-        if configured_executable:
-            return configured_executable
-        if Path(configured_path).is_file():
-            return str(Path(configured_path).resolve())
-        raise FileNotFoundError("FFMPEG_PATH is set but does not point to an executable.")
-
-    ffmpeg_in_path = shutil.which("ffmpeg")
-    if ffmpeg_in_path:
-        return str(Path(ffmpeg_in_path).resolve())
-
-    executable_name = "ffmpeg.exe" if os.name == "nt" else "ffmpeg"
-    local_ffmpeg = Path(__file__).parent / executable_name
-    if local_ffmpeg.exists():
-        return str(local_ffmpeg)
-
-    # Windows package-manager locations
-    local_app_data = os.getenv("LOCALAPPDATA", "")
-    if os.name == "nt" and local_app_data:
-        winget_pattern = os.path.join(
-            local_app_data,
-            "Microsoft", "WinGet", "Packages",
-            "*FFmpeg*", "**", "ffmpeg.exe"
-        )
-        matches = glob.glob(winget_pattern, recursive=True)
-        if matches:
-            return matches[0]
-
-    # 4. Check Program Files / Chocolatey
-    common_paths = [
-        r"C:\ProgramData\chocolatey\bin\ffmpeg.exe",
-        r"C:\ffmpeg\bin\ffmpeg.exe",
-        r"C:\Program Files\ffmpeg\bin\ffmpeg.exe",
-    ]
-    if os.name == "nt":
-        for path in common_paths:
-            if os.path.exists(path):
-                return path
-
+def _is_working_ffmpeg(candidate: str) -> bool:
+    """Return whether candidate can actually start and report its version."""
     try:
-        import imageio_ffmpeg
-        bundled_ffmpeg = Path(imageio_ffmpeg.get_ffmpeg_exe()).resolve()
-    except (ImportError, OSError, RuntimeError) as error:
-        raise RuntimeError(
-            "FFmpeg was not found. Install the pinned imageio-ffmpeg dependency "
-            "or configure FFMPEG_PATH, then redeploy."
-        ) from error
-
-    if bundled_ffmpeg.is_file():
-        return str(bundled_ffmpeg)
-
-    raise FileNotFoundError(
-        f"imageio-ffmpeg returned a missing executable: {bundled_ffmpeg}"
-    )
-
-FFMPEG_PATH = find_ffmpeg()
-
-
-def validate_ffmpeg() -> None:
-    """Fail at startup if the selected FFmpeg binary cannot actually run."""
-    try:
-        subprocess.run(
-            [FFMPEG_PATH, "-version"],
-            check=True,
+        result = subprocess.run(
+            [candidate, "-version"],
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=False,
             timeout=10,
         )
-    except (OSError, subprocess.SubprocessError) as error:
-        raise RuntimeError(
-            f"FFmpeg executable could not run at {FFMPEG_PATH!r}. "
-            "Install imageio-ffmpeg or set FFMPEG_PATH to a working binary."
-        ) from error
+        return result.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def find_ffmpeg() -> str:
+    """Find a runnable FFmpeg binary across Render/Linux and local Windows."""
+    candidates = []
+    configured = os.getenv("FFMPEG_PATH", "").strip()
+    if configured:
+        candidates.append(shutil.which(configured) or configured)
+
+    system_ffmpeg = shutil.which("ffmpeg")
+    if system_ffmpeg:
+        candidates.append(system_ffmpeg)
+
+    # imageio-ffmpeg ships a platform-specific executable and works on Render
+    # even when the host image does not provide FFmpeg on PATH.
+    try:
+        import imageio_ffmpeg
+        candidates.append(imageio_ffmpeg.get_ffmpeg_exe())
+    except (ImportError, RuntimeError, OSError):
+        pass
+
+    local_names = ("ffmpeg", "ffmpeg.exe")
+    for name in local_names:
+        local_binary = Path(__file__).parent / name
+        if local_binary.is_file():
+            candidates.append(str(local_binary))
+
+    checked = set()
+    for candidate in candidates:
+        if candidate and candidate not in checked:
+            checked.add(candidate)
+            if _is_working_ffmpeg(candidate):
+                return candidate
+
+    raise RuntimeError(
+        "FFmpeg is missing or cannot run. Install the imageio-ffmpeg dependency, "
+        "or set FFMPEG_PATH to a working FFmpeg executable."
+    )
+
+
+FFMPEG_PATH = find_ffmpeg()
